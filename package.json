@@ -1,0 +1,42 @@
+{
+  "name": "mcp-source-code-server",
+  "version": "0.2.0",
+  "description": "A secure MCP server for reading and writing source code files",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "NODE_OPTIONS='--experimental-vm-modules --no-warnings' jest",
+    "test:watch": "NODE_OPTIONS='--experimental-vm-modules --no-warnings' jest --watch",
+    "test:coverage": "NODE_OPTIONS='--experimental-vm-modules --no-warnings' jest --coverage",
+    "docker:build": "docker build -t mcp-source-server .",
+    "docker:run": "docker run -it --rm -v $(pwd)/workspace:/app/workspace mcp-source-server",
+    "lint": "echo 'Linting skipped for now'",
+    "format": "echo 'Formatting skipped for now'"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "source-code",
+    "file-server",
+    "security"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/jest": "^29.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

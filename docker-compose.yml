@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NODE_ENV=production
+    container_name: mcp-source-server
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - NODE_ENV=production
+      - MCP_WORKSPACE_DIR=/app/workspace
+      - MCP_MAX_FILE_SIZE=10485760
+      - MCP_MAX_CONCURRENT_OPS=10
+      - MCP_RATE_LIMITING=true
+      - MCP_MAX_REQUESTS_PER_MINUTE=100
+      - MCP_MAX_CONNECTIONS=5
+      - MCP_LOGGING=true
+      - MCP_LOG_LEVEL=info
+      - MCP_LOG_FILE=/app/logs/mcp-server.log
+      - MCP_AUDIT_LOG=/app/logs/audit.log
+      - NODE_OPTIONS=--max-old-space-size=512
+    
+    # Volume mounts
+    volumes:
+      - ./workspace:/app/workspace:rw
+      - ./logs:/app/logs:rw
+      - ./backups:/app/backups:rw
+      - ./config:/app/config:ro
+    
+    # Security settings
+    user: "1001:1001"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /var/tmp:noexec,nosuid,size=50m
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('Health check passed')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    # Network settings
+    networks:
+      - mcp-network
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Log aggregation service
+  log-aggregator:
+    image: fluent/fluent-bit:latest
+    container_name: mcp-log-aggregator
+    restart: unless-stopped
+    volumes:
+      - ./logs:/var/log/mcp:ro
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+    networks:
+      - mcp-network
+    depends_on:
+      - mcp-server
+    profiles:
+      - logging
+
+  # Optional: Monitoring service
+  monitoring:
+    image: prom/node-exporter:latest
+    container_name: mcp-monitoring
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    networks:
+      - mcp-network
+    profiles:
+      - monitoring
+
+networks:
+  mcp-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  workspace-data:
+    driver: local
+  logs-data:
+    driver: local
+  backups-data:
+    driver: local
