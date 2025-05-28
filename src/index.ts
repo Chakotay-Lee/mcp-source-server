@@ -33,6 +33,45 @@ class SecureFileManager {
   }
 
   /**
+   * Check if file extension is allowed
+   */
+  private isFileExtensionAllowed(fileName: string): boolean {
+    // If no extension restrictions, allow all
+    if (this.config.allowedExtensions.length === 0) {
+      return true;
+    }
+    
+    const ext = path.extname(fileName).toLowerCase();
+    return this.config.allowedExtensions.includes(ext);
+  }
+
+  /**
+   * Check if path is blacklisted with precise pattern matching
+   */
+  private isPathBlacklisted(relativePath: string): boolean {
+    const fileName = path.basename(relativePath);
+    
+    for (const blacklisted of this.config.blacklistedPaths) {
+      // Special handling for .env. pattern
+      if (blacklisted === '.env.') {
+        // Allow .env.template and .env.example but block .env.local, .env.production etc.
+        if (fileName.startsWith('.env.') && 
+            !fileName.endsWith('.template') && 
+            !fileName.endsWith('.example') &&
+            !fileName.endsWith('.sample')) {
+          return true;
+        }
+      } else {
+        // For other patterns, use includes
+        if (relativePath.includes(blacklisted)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Security check: Validate if the requested path is within allowed directory
    */
   private validatePath(filePath: string, isFileOperation: boolean = true): string {
@@ -51,18 +90,17 @@ class SecureFileManager {
     // Check for blacklisted patterns (skip this check for empty path which means root)
     if (filePath !== "" && filePath !== ".") {
       const relativePath = path.relative(this.normalizedAllowedDir, resolvedPath);
-      for (const blacklisted of this.config.blacklistedPaths) {
-        if (relativePath.includes(blacklisted)) {
-          throw new Error(`Access denied: Path contains blacklisted pattern '${blacklisted}'`);
-        }
+      if (this.isPathBlacklisted(relativePath)) {
+        throw new Error(`Access denied: Path contains blacklisted pattern`);
       }
     }
 
     // Check file extension only for file operations, not directory operations
-    if (isFileOperation && this.config.allowedExtensions.length > 0) {
-      const ext = path.extname(resolvedPath).toLowerCase();
-      if (!this.config.allowedExtensions.includes(ext)) {
-        throw new Error(`Access denied: File extension '${ext}' is not allowed`);
+    if (isFileOperation) {
+      const fileName = path.basename(resolvedPath);
+      if (!this.isFileExtensionAllowed(fileName)) {
+        const ext = path.extname(fileName).toLowerCase();
+        throw new Error(`Access denied: File extension '${ext || 'no extension'}' is not allowed`);
       }
     }
 
@@ -164,6 +202,167 @@ class SecureFileManager {
   }
 
   /**
+   * Partial write for LLM optimization - update specific content without rewriting entire file
+   */
+  async partialWriteFile(filePath: string, oldContent: string, newContent: string): Promise<void> {
+    // Check concurrent operations
+    if (this.activeOperations >= this.config.maxConcurrentOperations) {
+      throw new Error('Too many concurrent operations. Please try again later.');
+    }
+
+    this.activeOperations++;
+    
+    try {
+      const safePath = this.validatePath(filePath, true);
+      
+      // Read current file content
+      const currentContent = await fs.readFile(safePath, 'utf-8');
+      
+      // Find the exact position of oldContent in the file
+      const oldIndex = currentContent.indexOf(oldContent);
+      if (oldIndex === -1) {
+        throw new Error(`Original content not found in file. The content might have been modified.`);
+      }
+      
+      // Check if there are multiple occurrences
+      const secondOccurrence = currentContent.indexOf(oldContent, oldIndex + 1);
+      if (secondOccurrence !== -1) {
+        throw new Error(`Multiple occurrences of the target content found. Please use specific content for replacement.`);
+      }
+      
+      // Replace the content
+      const updatedContent = currentContent.substring(0, oldIndex) + 
+                           newContent + 
+                           currentContent.substring(oldIndex + oldContent.length);
+      
+      // Content size validation
+      const contentSize = Buffer.byteLength(updatedContent, 'utf-8');
+      if (contentSize > this.config.maxFileSize) {
+        throw new Error(`Updated content size (${contentSize} bytes) exceeds maximum allowed size (${this.config.maxFileSize} bytes)`);
+      }
+
+      // Create backup before modification
+      await this.createBackup(safePath);
+      
+      // Write updated content
+      await fs.writeFile(safePath, updatedContent, 'utf-8');
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to partial write file '${filePath}': ${error.message}`);
+      }
+      throw error;
+    } finally {
+      this.activeOperations--;
+    }
+  }
+
+  /**
+   * Delete file securely
+   */
+  async deleteFile(filePath: string, createBackup: boolean = true): Promise<void> {
+    // Check concurrent operations
+    if (this.activeOperations >= this.config.maxConcurrentOperations) {
+      throw new Error('Too many concurrent operations. Please try again later.');
+    }
+
+    this.activeOperations++;
+    
+    try {
+      const safePath = this.validatePath(filePath, true);
+      
+      // Check if file exists
+      try {
+        await fs.access(safePath, fs.constants.F_OK);
+      } catch (accessError: any) {
+        if (accessError.code === 'ENOENT') {
+          throw new Error(`File '${filePath}' does not exist`);
+        }
+        throw accessError;
+      }
+      
+      // Create backup if requested
+      if (createBackup) {
+        await this.createBackup(safePath);
+      }
+      
+      // Delete the file
+      await fs.unlink(safePath);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message.includes('does not exist') || 
+            error.message.includes('Access denied')) {
+          throw error;
+        }
+        throw new Error(`Failed to delete file '${filePath}': ${error.message}`);
+      }
+      throw error;
+    } finally {
+      this.activeOperations--;
+    }
+  }
+
+  /**
+   * Rename or move file securely
+   */
+  async renameFile(oldPath: string, newPath: string, createBackup: boolean = true): Promise<void> {
+    // Check concurrent operations
+    if (this.activeOperations >= this.config.maxConcurrentOperations) {
+      throw new Error('Too many concurrent operations. Please try again later.');
+    }
+
+    this.activeOperations++;
+    
+    try {
+      const safeOldPath = this.validatePath(oldPath, true);
+      const safeNewPath = this.validatePath(newPath, true);
+      
+      // Check if source file exists
+      try {
+        await fs.access(safeOldPath, fs.constants.F_OK);
+      } catch (accessError: any) {
+        if (accessError.code === 'ENOENT') {
+          throw new Error(`Source file '${oldPath}' does not exist`);
+        }
+        throw accessError;
+      }
+      
+      // Check if destination already exists
+      try {
+        await fs.access(safeNewPath, fs.constants.F_OK);
+        throw new Error(`Destination '${newPath}' already exists`);
+      } catch (accessError: any) {
+        if (accessError.code !== 'ENOENT') {
+          throw accessError;
+        }
+        // File doesn't exist, which is what we want
+      }
+      
+      // Create backup if requested
+      if (createBackup) {
+        await this.createBackup(safeOldPath);
+      }
+      
+      // Ensure destination directory exists
+      await fs.mkdir(path.dirname(safeNewPath), { recursive: true });
+      
+      // Rename/move the file
+      await fs.rename(safeOldPath, safeNewPath);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message.includes('does not exist') || 
+            error.message.includes('already exists') ||
+            error.message.includes('Access denied')) {
+          throw error;
+        }
+        throw new Error(`Failed to rename/move file from '${oldPath}' to '${newPath}': ${error.message}`);
+      }
+      throw error;
+    } finally {
+      this.activeOperations--;
+    }
+  }
+
+  /**
    * Create backup of existing file
    */
   private async createBackup(filePath: string): Promise<void> {
@@ -244,12 +443,14 @@ class SecureFileManager {
       
       for (const entry of entries) {
         if (entry.isFile()) {
-          // Check if file extension is allowed
-          if (this.config.allowedExtensions.length > 0) {
-            const ext = path.extname(entry.name).toLowerCase();
-            if (!this.config.allowedExtensions.includes(ext)) {
-              continue; // Skip files with disallowed extensions
-            }
+          // Check if file extension is allowed using the same logic as other methods
+          if (!this.isFileExtensionAllowed(entry.name)) {
+            continue; // Skip files with disallowed extensions
+          }
+          
+          // Also check if file is blacklisted
+          if (this.isPathBlacklisted(entry.name)) {
+            continue; // Skip blacklisted files
           }
           
           try {
@@ -300,12 +501,34 @@ class SourceCodeMCPServer {
       maxFileSize: 10 * 1024 * 1024, // 10MB
       maxConcurrentOperations: 10,
       allowedExtensions: [
+        // Programming languages
         '.js', '.ts', '.jsx', '.tsx', '.py', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp',
         '.java', '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.scala',
+        
+        // Web technologies
         '.html', '.css', '.scss', '.less', '.json', '.xml', '.yaml', '.yml',
-        '.md', '.txt', '.sh', '.bat', '.ps1', '.sql', '.r', '.matlab', '.pl'
+        
+        // Documentation and text
+        '.md', '.txt', '.rst', '.adoc',
+        
+        // Scripts and configs
+        '.sh', '.bat', '.ps1', '.sql', '.r', '.matlab', '.pl',
+        
+        // Template and config files
+        '.template', '.example', '.sample', '.config',
+        
+        // Special development files (no extension)
+        '', // Files without extension like Dockerfile, Makefile, .gitignore, etc.
       ],
-      blacklistedPaths: ['..', '.git', 'node_modules', '.env', 'secrets']
+      blacklistedPaths: [
+        '..',           // Prevent directory traversal
+        '.git/',        // Git repository files
+        'node_modules/', // Dependencies directory  
+        '.env.',        // Environment files (includes .env, .env.local, .env.production, etc.)
+        'secrets/',     // Secrets directory
+        '.DS_Store',    // macOS system files
+        'Thumbs.db'     // Windows system files
+      ]
     };
 
     this.fileManager = new SecureFileManager(defaultConfig);
@@ -313,7 +536,7 @@ class SourceCodeMCPServer {
     this.server = new Server(
       {
         name: "source-code-file-server",
-        version: "0.1.0",
+        version: "0.2.1",
         capabilities: {
           tools: {},
         }
@@ -363,6 +586,70 @@ class SourceCodeMCPServer {
                 },
               },
               required: ["filePath", "content"],
+            },
+          },
+          {
+            name: "partial_write_source_file",
+            description: "Efficiently update part of a file by replacing specific content (optimized for LLM usage)",
+            inputSchema: {
+              type: "object",
+              properties: {
+                filePath: {
+                  type: "string",
+                  description: "Path to the source file to update (relative to workspace)",
+                },
+                oldContent: {
+                  type: "string",
+                  description: "Exact content to be replaced (must be unique in the file)",
+                },
+                newContent: {
+                  type: "string",
+                  description: "New content to replace the old content with",
+                },
+              },
+              required: ["filePath", "oldContent", "newContent"],
+            },
+          },
+          {
+            name: "delete_source_file",
+            description: "Delete a source code file",
+            inputSchema: {
+              type: "object",
+              properties: {
+                filePath: {
+                  type: "string",
+                  description: "Path to the source file to delete (relative to workspace)",
+                },
+                createBackup: {
+                  type: "boolean",
+                  description: "Whether to create a backup before deletion",
+                  default: true,
+                },
+              },
+              required: ["filePath"],
+            },
+          },
+          {
+            name: "rename_source_file",
+            description: "Rename or move a source code file to a new location",
+            inputSchema: {
+              type: "object",
+              properties: {
+                oldPath: {
+                  type: "string",
+                  description: "Current path of the source file (relative to workspace)",
+                },
+                newPath: {
+                  type: "string",
+                  description: "New path for the source file (relative to workspace)",
+                },
+                createBackup: {
+                  type: "boolean",
+                  description: "Whether to create a backup before renaming/moving",
+                  default: true,
+                },
+              },
+              required: ["oldPath", "newPath"],
             },
           },
           {
@@ -451,6 +738,67 @@ class SourceCodeMCPServer {
             };
           }
 
+          case "partial_write_source_file": {
+            const { filePath, oldContent, newContent } = args as { 
+              filePath: string; 
+              oldContent: string; 
+              newContent: string;
+            };
+            if (!filePath || oldContent === undefined || newContent === undefined) {
+              throw new Error('filePath, oldContent, and newContent parameters are required');
+            }
+            await this.fileManager.partialWriteFile(filePath, oldContent, newContent);
+            const sizeDiff = Buffer.byteLength(newContent, 'utf-8') - Buffer.byteLength(oldContent, 'utf-8');
+            const sizeChange = sizeDiff >= 0 ? `+${sizeDiff}` : `${sizeDiff}`;
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Successfully updated ${filePath} (content replaced, size change: ${sizeChange} bytes)`,
+                },
+              ],
+            };
+          }
+
+          case "delete_source_file": {
+            const { filePath, createBackup = true } = args as { 
+              filePath: string; 
+              createBackup?: boolean 
+            };
+            if (!filePath) {
+              throw new Error('filePath parameter is required');
+            }
+            await this.fileManager.deleteFile(filePath, createBackup);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Successfully deleted ${filePath}${createBackup ? ' (backup created)' : ''}`,
+                },
+              ],
+            };
+          }
+
+          case "rename_source_file": {
+            const { oldPath, newPath, createBackup = true } = args as { 
+              oldPath: string; 
+              newPath: string; 
+              createBackup?: boolean 
+            };
+            if (!oldPath || !newPath) {
+              throw new Error('oldPath and newPath parameters are required');
+            }
+            await this.fileManager.renameFile(oldPath, newPath, createBackup);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Successfully renamed/moved ${oldPath} to ${newPath}${createBackup ? ' (backup created)' : ''}`,
+                },
+              ],
+            };
+          }
+
           case "stream_write_source_file": {
             const { filePath, content } = args as { filePath: string; content: string };
             if (!filePath || content === undefined) {
@@ -511,7 +859,9 @@ class SourceCodeMCPServer {
 Active Operations: ${stats.activeOperations}
 Workspace Directory: ${stats.allowedDirectory}
 Max File Size: ${stats.maxFileSize} bytes (${(stats.maxFileSize / 1024 / 1024).toFixed(1)} MB)
-Server Version: 0.1.0`,
+Server Version: 0.2.1
+New Features: File deletion, rename/move, partial write optimization
+Extension Fix: Added .template, .example, .sample, .config support`,
                 },
               ],
             };
@@ -538,7 +888,7 @@ Server Version: 0.1.0`,
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error("Source Code MCP Server running on stdio");
+    console.error("Enhanced Source Code MCP Server running on stdio");
   }
 }
 
