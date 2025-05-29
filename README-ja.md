@@ -30,7 +30,7 @@ AIを使ったVibe Codingでプログラム開発をしたいけれど、Cursor�
 
 ```bash
 # リポジトリをクローン
-git clone git@github_alexlee:Chakotay-Lee/mcp-source-server.git
+git clone git@hgithub.com/Chakotay-Lee/mcp-source-server
 cd mcp-source-server
 
 # 依存関係をインストール

@@ -30,7 +30,7 @@ Once you set up this MCP Server, your AI assistant can automatically search thro
 
 ```bash
 # Clone the repository
-git clone git@github_alexlee:Chakotay-Lee/mcp-source-server.git
+git clone git@hgithub.com/Chakotay-Lee/mcp-source-server
 cd mcp-source-server
 
 # Install dependencies

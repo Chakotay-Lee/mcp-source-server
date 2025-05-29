@@ -29,7 +29,7 @@
 
 ```bash
 # 複製專案
-git clone git@github_alexlee:Chakotay-Lee/mcp-source-server.git
+git clone git@hgithub.com/Chakotay-Lee/mcp-source-server
 cd mcp-source-server
 
 # 安裝相依性
