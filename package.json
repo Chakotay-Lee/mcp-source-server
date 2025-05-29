@@ -1,7 +1,7 @@
 {
   "name": "mcp-source-code-server",
-  "version": "0.2.0",
-  "description": "A secure MCP server for reading and writing source code files",
+  "version": "0.2.1",
+  "description": "A secure and enhanced MCP server for source code file operations, optimized for LLM interactions",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -11,18 +11,11 @@
     "test": "NODE_OPTIONS='--experimental-vm-modules --no-warnings' jest",
     "test:watch": "NODE_OPTIONS='--experimental-vm-modules --no-warnings' jest --watch",
     "test:coverage": "NODE_OPTIONS='--experimental-vm-modules --no-warnings' jest --coverage",
-    "test:vitest": "vitest run",
-    "test:vitest:watch": "vitest",
-    "test:vitest:ui": "vitest --ui",
-    "test:vitest:coverage": "vitest run --coverage",
-    "docker:build": "docker build -t mcp-source-server .",
-    "docker:run": "docker run -it --rm -v $(pwd)/workspace:/app/workspace mcp-source-server",
     "lint": "echo 'Linting skipped for now'",
     "format": "echo 'Formatting skipped for now'",
     "deps:check": "npm outdated",
     "deps:update": "npm update",
     "deps:audit": "npm audit",
-    "deps:health": "./check-dependencies.sh",
     "clean": "rm -rf node_modules package-lock.json && npm install",
     "install:clean": "npm install --no-fund --no-audit --silent"
   },
@@ -31,9 +24,12 @@
     "model-context-protocol",
     "source-code",
     "file-server",
-    "security"
+    "security",
+    "llm-optimized",
+    "file-operations",
+    "enhanced"
   ],
-  "author": "Your Name",
+  "author": "Alex Lee (Chakotay-Lee)",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.4.0"
@@ -52,5 +48,13 @@
   "overrides": {
     "glob": "^10.4.5",
     "inflight": "npm:@isaacs/inflight@^1.0.6"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chakotay-Lee/mcp-source-code-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Chakotay-Lee/mcp-source-code-server/issues"
+  },
+  "homepage": "https://github.com/Chakotay-Lee/mcp-source-code-server#readme"
 }
