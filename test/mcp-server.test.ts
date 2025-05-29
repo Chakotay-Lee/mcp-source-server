@@ -489,8 +489,8 @@ console.log("duplicate");`;
       expect(result.isError).toBe(false);
       const output = result.content[0].text;
       expect(output).toContain('Server Statistics');
-      expect(output).toContain('Server Version: 0.2.1'); // Updated to match actual version
-      expect(output).toContain('New Features: File deletion, rename/move, partial write optimization');
+      expect(output).toContain('Server Version: 0.2.2'); // Updated to match actual version
+      expect(output).toContain('New Features: File deletion, rename/move, partial write optimization, text search (grep-like)');
       expect(output).toContain('Active Operations');
       expect(output).toContain('Workspace Directory');
       expect(output).toContain('Max File Size');
@@ -592,6 +592,309 @@ console.log("duplicate");`;
       const backupDir = path.join(TEST_WORKSPACE, '.backups');
       const backupFiles = await fs.readdir(backupDir);
       expect(backupFiles.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Text Search Functionality (Grep-like)', () => {
+    beforeEach(async () => {
+      // Create test files with various content for search testing
+      const files = [
+        {
+          path: 'src/main.js',
+          content: `console.log("Hello World");
+function greet(name) {
+  return "Hello " + name;
+}
+const greeting = "Welcome to our application";
+// Additional Hello for testing
+const welcomeMessage = "Hello everyone!";`
+        },
+        {
+          path: 'src/utils.js',
+          content: `function calculateSum(a, b) {
+  return a + b;
+}
+// Helper function
+function formatGreeting(message) {
+  return message.toUpperCase();
+}`
+        },
+        {
+          path: 'tests/main.test.js',
+          content: `describe('main tests', () => {
+  it('should greet properly', () => {
+    expect(greet('World')).toBe('Hello World');
+  });
+});`
+        },
+        {
+          path: 'README.md',
+          content: `# Project Title
+This project demonstrates greeting functionality.
+It includes functions to greet users with Hello messages.
+Hello world example is included for demonstration.`
+        },
+        {
+          path: 'config.json',
+          content: `{
+  "name": "test-project",
+  "version": "1.0.0",
+  "greeting": "Hello"
+}`
+        }
+      ];
+
+      // Create directories and files
+      for (const file of files) {
+        const fullPath = path.join(TEST_WORKSPACE, file.path);
+        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        await fs.writeFile(fullPath, file.content);
+      }
+    });
+
+    it('should search for simple text patterns', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'Hello',
+        recursive: true // Explicitly enable recursive search
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Search results for pattern "Hello"');
+      expect(output).toContain('Found');
+      expect(output).toContain('file(s) with matches');
+      // Check for files that actually contain "Hello" based on our test data
+      expect(output).toContain('src/main.js');
+      expect(output).toContain('config.json');
+      expect(output).toContain('README.md');
+      expect(output).toContain('tests/main.test.js');
+      // Should find multiple files with recursive search enabled
+      expect(output.match(/Found [4-9]\d* file\(s\) with matches/)).toBeTruthy();
+    });
+
+    it('should search only in root directory by default', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'Hello'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Found');
+      // Should only find files in root directory by default
+      expect(output).toContain('config.json');
+      expect(output).toContain('README.md');
+      // Should NOT find files in subdirectories when recursive is false (default)
+      expect(output).not.toContain('src/main.js');
+      expect(output).not.toContain('tests/main.test.js');
+    });
+
+    it('should search recursively when explicitly requested', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'greet',
+        recursive: true
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('recursive');
+      expect(output).toContain('Found');
+      expect(output).toContain('file(s) with matches');
+      // Verify that multiple files are found (at least the ones we created)
+      expect(output).toContain('src/main.js');
+      expect(output).toContain('tests/main.test.js');
+    });
+
+    it('should search in specific directory only', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'function',
+        searchDir: 'src'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Search results for pattern "function" in src');
+      expect(output).toContain('src/main.js');
+      expect(output).toContain('src/utils.js');
+      expect(output).not.toContain('tests/main.test.js');
+    });
+
+    it('should ignore case when requested', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'HELLO',
+        ignoreCase: true,
+        recursive: true // Enable recursive search
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Found');
+      // Should find files containing "Hello" in any case (with recursive search enabled)
+      expect(output).toContain('src/main.js');
+      expect(output).toContain('config.json');
+      expect(output).toContain('README.md');
+      expect(output).toContain('tests/main.test.js');
+      // Verify multiple files are found when ignoring case
+      expect(output.match(/Found [4-9]\d* file\(s\) with matches/)).toBeTruthy();
+    });
+
+    it('should respect case sensitivity by default', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'HELLO'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('No matches found');
+    });
+
+    it('should return only filenames when contextLines is 0', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'function',
+        recursive: true, // Enable recursive search
+        contextLines: 0
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Matches:');
+      expect(output).not.toContain('Line ');
+    });
+
+    it('should include context lines when requested', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'greet',
+        searchDir: 'src',
+        recursive: true, // Enable recursive search
+        contextLines: 2
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Line ');
+      expect(output).toContain('function greet(name)');
+      // Should include context lines with line numbers
+      expect(output).toMatch(/\d+:/);
+    });
+
+    it('should handle patterns with special regex characters', async () => {
+      // Create a file with special characters
+      await testClient.callTool('write_source_file', {
+        filePath: 'special.js',
+        content: 'const regex = /hello.*world/g;\nconst price = $19.99;'
+      });
+
+      const result = await testClient.callTool('search_files', {
+        pattern: '$19.99'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Found');
+      expect(output).toContain('special.js');
+    });
+
+    it('should return no matches for non-existent patterns', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'nonexistentpattern12345'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('No matches found');
+    });
+
+    it('should handle empty search directory gracefully', async () => {
+      // Search in empty subdirectory
+      await fs.mkdir(path.join(TEST_WORKSPACE, 'empty'), { recursive: true });
+      
+      const result = await testClient.callTool('search_files', {
+        pattern: 'anything',
+        searchDir: 'empty'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('No matches found');
+    });
+
+    it('should respect security restrictions in search', async () => {
+      // Try to search outside workspace
+      const result = await testClient.callTool('search_files', {
+        pattern: 'test',
+        searchDir: '../outside'
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Access denied');
+    });
+
+    it('should skip blacklisted files during search', async () => {
+      // Create blacklisted files
+      await fs.mkdir(path.join(TEST_WORKSPACE, '.git'), { recursive: true });
+      await fs.writeFile(path.join(TEST_WORKSPACE, '.git', 'config'), 'Hello from git config');
+      await fs.writeFile(path.join(TEST_WORKSPACE, '.env.local'), 'Hello from env file');
+
+      const result = await testClient.callTool('search_files', {
+        pattern: 'Hello',
+        recursive: true // Enable recursive search
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).not.toContain('.git/config');
+      expect(output).not.toContain('.env.local');
+    });
+
+    it('should handle large files efficiently', async () => {
+      // Create a reasonably sized file (not too large to cause timeout)
+      const largeContent = 'line content\n'.repeat(1000) + 'SEARCH_TARGET\n' + 'more content\n'.repeat(1000);
+      
+      await testClient.callTool('write_source_file', {
+        filePath: 'large.txt',
+        content: largeContent
+      });
+
+      const result = await testClient.callTool('search_files', {
+        pattern: 'SEARCH_TARGET'
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      expect(output).toContain('Found');
+      expect(output).toContain('large.txt');
+    });
+
+    it('should provide LLM-friendly output format', async () => {
+      const result = await testClient.callTool('search_files', {
+        pattern: 'Hello',
+        recursive: true, // Enable recursive search
+        contextLines: 1
+      });
+
+      expect(result.isError).toBe(false);
+      const output = result.content[0].text;
+      
+      // Check for structured format that LLMs can easily parse
+      expect(output).toMatch(/Search results for pattern/);
+      expect(output).toMatch(/Found \d+ file\(s\) with matches/);
+      expect(output).toMatch(/File: [^\n]+/);
+      expect(output).toMatch(/Line \d+:/);
+    });
+
+    it('should handle concurrent search operations', async () => {
+      const operations = [
+        testClient.callTool('search_files', { pattern: 'Hello', recursive: true }),
+        testClient.callTool('search_files', { pattern: 'function', recursive: true }),
+        testClient.callTool('search_files', { pattern: 'greet', recursive: true })
+      ];
+
+      const results = await Promise.all(operations);
+      
+      // All operations should succeed
+      for (const result of results) {
+        expect(result.isError).toBe(false);
+        expect(result.content[0].text).toContain('Search results');
+      }
     });
   });
 });

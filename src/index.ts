@@ -478,6 +478,230 @@ class SecureFileManager {
   }
 
   /**
+   * Search for text patterns in files (grep-like functionality) - SAFE VERSION
+   */
+  async searchInFiles(
+    pattern: string,
+    searchDir: string = "",
+    options: {
+      recursive?: boolean;
+      ignoreCase?: boolean;
+      contextLines?: number;
+    } = {}
+  ): Promise<Array<{
+    file: string;
+    matches: Array<{
+      lineNumber: number;
+      line: string;
+      context?: {
+        before: string[];
+        after: string[];
+      };
+    }>;
+  }>> {
+    const {
+      recursive = false, // Default to false for safety
+      ignoreCase = false,
+      contextLines = 0
+    } = options;
+    
+    try {
+      let searchPath: string;
+      
+      // Handle empty or root directory path
+      if (searchDir === undefined || searchDir === null || searchDir === "" || searchDir === ".") {
+        searchPath = this.normalizedAllowedDir;
+      } else {
+        searchPath = this.validatePath(searchDir, false);
+      }
+      
+      const results: Array<{
+        file: string;
+        matches: Array<{
+          lineNumber: number;
+          line: string;
+          context?: {
+            before: string[];
+            after: string[];
+          };
+        }>;
+      }> = [];
+      
+      // Use safe iterative approach instead of recursion
+      await this.searchInDirectorySafe(searchPath, pattern, ignoreCase, contextLines, recursive, results);
+      
+      return results;
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to search in files: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Safe iterative directory search to prevent infinite recursion
+   */
+  private async searchInDirectorySafe(
+    rootPath: string,
+    pattern: string,
+    ignoreCase: boolean,
+    contextLines: number,
+    recursive: boolean,
+    results: Array<{
+      file: string;
+      matches: Array<{
+        lineNumber: number;
+        line: string;
+        context?: {
+          before: string[];
+          after: string[];
+        };
+      }>;
+    }>
+  ): Promise<void> {
+    // Use a queue-based approach instead of recursion
+    const directoriesToProcess = [rootPath];
+    const processedPaths = new Set<string>();
+    const maxDirectories = 1000; // Safety limit
+    let processedCount = 0;
+
+    while (directoriesToProcess.length > 0 && processedCount < maxDirectories) {
+      const currentDir = directoriesToProcess.shift()!;
+      processedCount++;
+
+      // Prevent infinite loops
+      try {
+        const realPath = await fs.realpath(currentDir);
+        if (processedPaths.has(realPath)) {
+          continue;
+        }
+        processedPaths.add(realPath);
+      } catch (error) {
+        continue; // Skip if can't get real path
+      }
+
+      try {
+        const entries = await fs.readdir(currentDir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          const fullPath = path.join(currentDir, entry.name);
+          const relativePath = path.relative(this.normalizedAllowedDir, fullPath);
+          
+          if (entry.isFile()) {
+            // Check if file extension is allowed and not blacklisted
+            if (!this.isFileExtensionAllowed(entry.name) || 
+                this.isPathBlacklisted(relativePath)) {
+              continue;
+            }
+            
+            try {
+              // Check file size before reading
+              const stats = await fs.stat(fullPath);
+              if (stats.size > this.config.maxFileSize) {
+                continue; // Skip files that are too large
+              }
+              
+              const matches = await this.searchInFile(fullPath, pattern, ignoreCase, contextLines);
+              if (matches.length > 0) {
+                results.push({
+                  file: relativePath,
+                  matches: matches
+                });
+              }
+            } catch (error) {
+              // Skip files that can't be read or processed
+              continue;
+            }
+          } else if (entry.isDirectory() && recursive) {
+            // Skip blacklisted directories and hidden directories
+            if (this.isPathBlacklisted(relativePath) || 
+                (entry.name.startsWith('.') && !['..', '.'].includes(entry.name))) {
+              continue;
+            }
+            
+            // Add to queue for processing
+            directoriesToProcess.push(fullPath);
+          }
+        }
+      } catch (error) {
+        // Skip directories that can't be accessed
+        continue;
+      }
+    }
+  }
+
+  /**
+   * Search for pattern in a single file
+   */
+  private async searchInFile(
+    filePath: string,
+    pattern: string,
+    ignoreCase: boolean,
+    contextLines: number
+  ): Promise<Array<{
+    lineNumber: number;
+    line: string;
+    context?: {
+      before: string[];
+      after: string[];
+    };
+  }>> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const matches: Array<{
+        lineNumber: number;
+        line: string;
+        context?: {
+          before: string[];
+          after: string[];
+        };
+      }> = [];
+      
+      // Create regex pattern for search
+      const searchPattern = new RegExp(
+        pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), // Escape special regex characters
+        ignoreCase ? 'i' : ''
+      );
+      
+      for (let i = 0; i < lines.length; i++) {
+        if (searchPattern.test(lines[i])) {
+          const match: {
+            lineNumber: number;
+            line: string;
+            context?: {
+              before: string[];
+              after: string[];
+            };
+          } = {
+            lineNumber: i + 1,
+            line: lines[i]
+          };
+          
+          // Add context if requested
+          if (contextLines > 0) {
+            const beforeStart = Math.max(0, i - contextLines);
+            const afterEnd = Math.min(lines.length - 1, i + contextLines);
+            
+            match.context = {
+              before: lines.slice(beforeStart, i),
+              after: lines.slice(i + 1, afterEnd + 1)
+            };
+          }
+          
+          matches.push(match);
+        }
+      }
+      
+      return matches;
+    } catch (error) {
+      // Return empty array if file can't be read
+      return [];
+    }
+  }
+
+  /**
    * Get server statistics
    */
   getStats(): {activeOperations: number, allowedDirectory: string, maxFileSize: number} {
@@ -692,6 +916,40 @@ class SourceCodeMCPServer {
               properties: {},
             },
           },
+          {
+            name: "search_files",
+            description: "Search for text patterns in files (grep-like functionality)",
+            inputSchema: {
+              type: "object",
+              properties: {
+                pattern: {
+                  type: "string",
+                  description: "Text pattern to search for",
+                },
+                searchDir: {
+                  type: "string",
+                  description: "Directory to search in (relative to workspace, default is root)",
+                  default: "",
+                },
+                recursive: {
+                  type: "boolean",
+                  description: "Whether to search subdirectories recursively",
+                  default: false,
+                },
+                ignoreCase: {
+                  type: "boolean",
+                  description: "Whether to ignore case when searching",
+                  default: false,
+                },
+                contextLines: {
+                  type: "number",
+                  description: "Number of context lines to include before and after matches (0 means no context, only filenames)",
+                  default: 0,
+                },
+              },
+              required: ["pattern"],
+            },
+          },
         ],
       };
     });
@@ -859,9 +1117,93 @@ class SourceCodeMCPServer {
 Active Operations: ${stats.activeOperations}
 Workspace Directory: ${stats.allowedDirectory}
 Max File Size: ${stats.maxFileSize} bytes (${(stats.maxFileSize / 1024 / 1024).toFixed(1)} MB)
-Server Version: 0.2.1
-New Features: File deletion, rename/move, partial write optimization
+Server Version: 0.2.2
+New Features: File deletion, rename/move, partial write optimization, text search (grep-like)
 Extension Fix: Added .template, .example, .sample, .config support`,
+                },
+              ],
+            };
+          }
+
+          case "search_files": {
+            const { 
+              pattern, 
+              searchDir = "", 
+              recursive = false, // Change default back to false for safety
+              ignoreCase = false, 
+              contextLines = 0 
+            } = args as { 
+              pattern: string; 
+              searchDir?: string; 
+              recursive?: boolean; 
+              ignoreCase?: boolean; 
+              contextLines?: number; 
+            };
+            
+            if (!pattern) {
+              throw new Error('pattern parameter is required');
+            }
+            
+            const searchResults = await this.fileManager.searchInFiles(
+              pattern, 
+              searchDir, 
+              { recursive, ignoreCase, contextLines }
+            );
+            
+            if (searchResults.length === 0) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `No matches found for pattern "${pattern}" in ${searchDir || 'workspace'}${recursive ? ' (recursive)' : ''}`,
+                  },
+                ],
+              };
+            }
+            
+            // Format results for LLM-friendly analysis
+            let output = `Search results for pattern "${pattern}" in ${searchDir || 'workspace'}${recursive ? ' (recursive)' : ''}:\n`;
+            output += `Found ${searchResults.length} file(s) with matches\n\n`;
+            
+            for (const result of searchResults) {
+              output += `File: ${result.file}\n`;
+              
+              if (contextLines === 0) {
+                // Only show match count when no context is requested
+                output += `  Matches: ${result.matches.length}\n`;
+              } else {
+                // Show detailed matches with context
+                for (const match of result.matches) {
+                  output += `  Line ${match.lineNumber}: ${match.line.trim()}\n`;
+                  
+                  if (match.context) {
+                    // Show context before
+                    if (match.context.before.length > 0) {
+                      match.context.before.forEach((line, index) => {
+                        const lineNum = match.lineNumber - match.context!.before.length + index;
+                        output += `    ${lineNum}: ${line.trim()}\n`;
+                      });
+                    }
+                    
+                    // Show context after
+                    if (match.context.after.length > 0) {
+                      match.context.after.forEach((line, index) => {
+                        const lineNum = match.lineNumber + index + 1;
+                        output += `    ${lineNum}: ${line.trim()}\n`;
+                      });
+                    }
+                  }
+                }
+              }
+              
+              output += '\n';
+            }
+            
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: output.trim(),
                 },
               ],
             };
